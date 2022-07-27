@@ -3,6 +3,7 @@
 pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 
 contract Compounder is IERC721Receiver {
@@ -10,7 +11,7 @@ contract Compounder is IERC721Receiver {
     address owner;
     address keeper = 0x9b374bb9e4130a3B926fE56C0849432b664e9420;
     uint128 maxCollect = 340282366920938463463374607431768211455;
-
+    uint256 maxSpend = 115792089237316195423570985008687907853269984665640564039457584007913129639935
     INonfungiblePositionManager NFPM = INonfungiblePositionManager(deployedNonfungiblePositionManager);
 
     constructor() {
@@ -26,21 +27,6 @@ contract Compounder is IERC721Receiver {
         uint token1; //amount of token0 that is compounded, with fees deducted
     }
 
-    struct CollectParams {
-        uint256 tokenId;
-        address recipient;
-        uint128 amount0Max;
-        uint128 amount1Max;
-    }
-
-    struct IncreaseLiquidityParams {
-        uint256 tokenId;
-        uint256 amount0Desired;
-        uint256 amount1Desired;
-        uint256 amount0Min;
-        uint256 amount1Min;
-        uint256 deadline;
-    }
     
     function addressToSentIn(address addy) public view returns(uint[] memory) {
         return addressToTokenId[addy];
@@ -68,19 +54,25 @@ contract Compounder is IERC721Receiver {
     }
 
     //function doSingleUpkeep(validUpkeep memory params)
-    function doSingleUpkeep(uint tokenID, uint amount0Desired, uint amount1Desired, uint amount0Min, uint amount1Min, uint256 deadline) public {
-        CollectParams memory CP = CollectParams(tokenID, address(this), maxCollect, maxCollect);
-        bytes memory collectcall = abi.encodeWithSignature("collect((uint256,address,uint128,uint128))", CP);
-        address(NFPM).call(collectcall);
+    function doSingleUpkeep(uint tokenID, address token0, address token1, uint amount0Desired, uint amount1Desired, uint amount0Min, uint amount1Min, uint256 deadline) public {
+        if (IERC20(token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           IERC20(token0).approve(deployedNonfungiblePositionManager, maxSpend);
+        }
 
-        IncreaseLiquidityParams memory IC = IncreaseLiquidityParams(tokenID, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline);
-        bytes memory increasecall = abi.encodeWithSignature("increaseLiquidity((uint256,uint256,uint256,uint256,uint256,uint256))", IC);
-        address(NFPM).call(increasecall);
+        if (IERC20(token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           IERC20(token1).approve(deployedNonfungiblePositionManager, maxSpend);
+        }
+
+        INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), maxCollect, maxCollect);
+        NFPM.collect(CP);
+
+        INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline);
+        NFPM.increaseLiquidity(IC);
     }
 
-    function onERC721Received( address operator, address from, uint256 tokenId, bytes calldata data ) public override returns (bytes4) {
+    function onERC721Received( address operator, address from, uint256 tokenID, bytes calldata data ) public override returns (bytes4) {
         if (operator == address(this)) {
-            addressToTokenId[from].push(tokenId);
+            addressToTokenId[from].push(tokenID);
         }
 
         return this.onERC721Received.selector;
