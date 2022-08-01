@@ -54,23 +54,29 @@ describe("Compounder", () => {
     const daiAmount = 100n * 10n ** 18n
     const usdcAmount = 100n * 10n ** 6n
   
-    await uniswap
+    await dai.connect(accounts[0]).approve(UNISWAP, ethers.constants.MaxUint256);
+    await usdc.connect(accounts[0]).approve(UNISWAP, ethers.constants.MaxUint256)
+
+    const s = await uniswap
       .connect(accounts[0])
       .mint(
-      ("0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      ["0x6B175474E89094C44Da98b954EedeAC495271d0F",
        "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-       500,
-       -887272, //min tick
-       887272, //max tick
-       daiAmount,
-       usdcAmount,
+       100,
+       -100,
+       100,
+       10,
+       10,
        0,
        0,
        accounts[0].address,
        2659131770
+      ]
       )
-      )
-      
+    const receipt = await s.wait();
+    for (const event of receipt.events) {
+      console.log(`Event ${event.event} with args ${event.args}`);
+    }
   
     
     console.log(
