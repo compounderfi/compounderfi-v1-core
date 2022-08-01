@@ -1,4 +1,6 @@
-require("@nomicfoundation/hardhat-toolbox");
+import { HardhatUserConfig } from "hardhat/config";
+import "@nomicfoundation/hardhat-toolbox";
+import "@nomiclabs/hardhat-ethers";
 
 module.exports = {
   solidity: {
