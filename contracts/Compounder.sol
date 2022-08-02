@@ -7,50 +7,68 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
+contract CompounderMath {
+    function calculateLiqNeeded(int24 tickLow, int24 tickCurrent, int24 tickHigh, uint256 tokenQTY) public pure returns(uint256 liq) {
+        return 1;
+    }
+}
 contract Compounder is IERC721Receiver, Ownable {
     address constant deployedNonfungiblePositionManager = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
-    address keeper = 0x9b374bb9e4130a3B926fE56C0849432b664e9420;
+    INonfungiblePositionManager public constant NFPM = INonfungiblePositionManager(deployedNonfungiblePositionManager);
     
-    INonfungiblePositionManager public constant NFPM = INonfungiblePositionManager(
-        0xC36442b4a4522E871399CD717aBDD847Ab11FE88
-    );
-
-    mapping(address => uint[]) public addressToTokenId;
-
-    struct validUpkeep {
-        uint tokenID; //the tokenID that is valid for upkeep
-        uint token0; //amount of token0 that is compounded, with fees deducted
-        uint token1; //amount of token0 that is compounded, with fees deducted
+    struct Position {
+        address token0;
+        address token1;
+        uint256 unclaimedToken0; //unclaimed on compounder, not on uniswap
+        uint256 unclaimedToken1; 
     }
 
-    
-    function addressToSentIn(address addy) public view returns(uint[] memory) {
-        return addressToTokenId[addy];
+    mapping(uint256 => Position) public tokenIDtoPosition; //this is initalized for a tokenID when it is sent
+
+    mapping(address => uint256[]) public addressToTokenIds;
+    mapping(uint256 => address) public tokenIDtoAddress;
+
+    //takes an address and returns an array of the tokenIDs they've staked
+    function addressOwns(address addy) public view returns(uint[] memory) {
+        return addressToTokenIds[addy];
     }
 
+    //takes a tokenID and returns the address that staked it
+    function ownerOfTokenID(uint256 tokenID) public view returns(address) {
+        return tokenIDtoAddress[tokenID];
+    }
+
+    //stakes a tokenID
     function send(uint256 tokenID) public {
         NFPM.safeTransferFrom(msg.sender, address(this), tokenID);
     }
 
+    //retrieves a NFT based on index
     function retrieve(uint index) public {
-        NFPM.safeTransferFrom(address(this), msg.sender, addressToTokenId[msg.sender][index]);
-        delete addressToTokenId[msg.sender][index];
+        uint256 tokenIDRetrieved = addressToTokenIds[msg.sender][index];
+
+        NFPM.safeTransferFrom(address(this), msg.sender, tokenIDRetrieved);
+        delete addressToTokenIds[msg.sender][index];
+        delete tokenIDtoAddress[tokenIDRetrieved];
     }
 
+
     function sendMultiple(uint256[] memory tokenIDs) public {
-        for (uint i = 0; i < tokenIDs.length; i++) {
+        uint i = 0;
+        for (; i < tokenIDs.length; i++) {
             send(tokenIDs[i]);
         }
     }
 
     function retrieveMultiple(uint256[] memory indexes) public {
-        for (uint i = 0; i < indexes.length; i++) {
+        uint i = 0;
+        for (; i < indexes.length; i++) {
             retrieve(indexes[i]);
         }
     }
 
-    //function doSingleUpkeep(validUpkeep memory params)
     function doSingleUpkeep(uint tokenID, address token0, address token1, uint amount0Desired, uint amount1Desired, uint amount0Min, uint amount1Min, uint256 deadline) public {
+        //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets
         if (IERC20(token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
            IERC20(token0).approve(deployedNonfungiblePositionManager, type(uint256).max);
         }
@@ -67,9 +85,10 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
     function onERC721Received( address operator, address from, uint256 tokenID, bytes calldata data ) public override returns (bytes4) {
-        if (operator == address(this)) {
-            addressToTokenId[from].push(tokenID);
-        }
+        require(operator == address(this));
+
+        addressToTokenIds[from].push(tokenID);
+        tokenIDtoAddress[tokenID] = from;
 
         return this.onERC721Received.selector;
     }
