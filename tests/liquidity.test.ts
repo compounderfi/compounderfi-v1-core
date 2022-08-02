@@ -1,4 +1,4 @@
-import chai from "chai";
+import chai, { expect } from "chai";
 import { Console } from "console";
 import { Contract, Signer } from "ethers";
 import { ethers, network } from "hardhat";
@@ -41,28 +41,24 @@ describe("Compounder", () => {
 
   let accounts: Signer[]
   let mainSignerAddress: String;
+
+  beforeEach(async () => {
+    const Compounderfi = await ethers.getContractFactory("Compounder")
+    compounder = await Compounderfi.deploy()
+    await compounder.deployed()
+    await uniswap.connect(accounts[0]).setApprovalForAll(compounder.address, true);
+  });
+
   before(async () => {
 
     accounts = await ethers.getSigners()
     mainSignerAddress = await accounts[0].getAddress();
 
-    const Compounderfi = await ethers.getContractFactory(
-      "Compounder"
-    )
-
-    compounder = await Compounderfi.deploy()
-    await compounder.deployed()
-
     usdt = await ethers.getContractAt("IERC20", USDT)
     usdc = await ethers.getContractAt("IERC20", USDC)
     uniswap = await ethers.getContractAt("INonfungiblePositionManager", UNISWAP)
-
-    await network.provider.request({
-      method: "hardhat_impersonateAccount",
-      params: [WHALE],
-    });
     
-    const whaleSigner = await ethers.getSigner(WHALE)
+    const whaleSigner = await ethers.getImpersonatedSigner(WHALE)
 
     // Send DAI and USDC to accounts[0]
     const usdtAmount = 100000000n * 10n ** 6n //100 million of each
@@ -73,11 +69,12 @@ describe("Compounder", () => {
 
     await usdt.connect(accounts[0]).approve(UNISWAP, ethers.constants.MaxUint256);
     await usdc.connect(accounts[0]).approve(UNISWAP, ethers.constants.MaxUint256);
-
   })
 
-  it("mintNewPosition", async () => {
+  it("sendSingle", async () => {
     const tokenIDminted = await mint(uniswap, accounts[0], mainSignerAddress);
-    console.log(tokenIDminted)
+    await compounder.connect(accounts[0]).send(tokenIDminted);
+    const addresses = await compounder.addressToSentIn(mainSignerAddress);
+    expect(addresses).to.equal([tokenIDminted]);
   })
 })
