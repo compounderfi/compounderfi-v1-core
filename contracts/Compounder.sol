@@ -7,11 +7,6 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract CompounderMath {
-    function calculateLiqNeeded(int24 tickLow, int24 tickCurrent, int24 tickHigh, uint256 tokenQTY) public pure returns(uint256 liq) {
-        return 1;
-    }
-}
 contract Compounder is IERC721Receiver, Ownable {
     address constant deployedNonfungiblePositionManager = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
     INonfungiblePositionManager public constant NFPM = INonfungiblePositionManager(deployedNonfungiblePositionManager);
@@ -82,7 +77,7 @@ contract Compounder is IERC721Receiver, Ownable {
         }
 
         INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), type(uint128).max, type(uint128).max);
-        NFPM.collect(CP);
+        (uint256 amount0, uint256 amount1) = NFPM.collect(CP);
 
         INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline);
         NFPM.increaseLiquidity(IC);
