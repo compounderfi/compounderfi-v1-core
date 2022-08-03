@@ -5,7 +5,10 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
+import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol"; //for hardhat artifact
+import "hardhat/console.sol";
 
 contract Compounder is IERC721Receiver, Ownable {
     address constant deployedNonfungiblePositionManager = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
@@ -66,21 +69,23 @@ contract Compounder is IERC721Receiver, Ownable {
         }
     }
 
-    function doSingleUpkeep(uint tokenID, address token0, address token1, uint amount0Desired, uint amount1Desired, uint amount0Min, uint amount1Min, uint256 deadline) public {
+    function doSingleUpkeep(uint tokenID, address token0, address token1, uint256 deadline) public {
         //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets
         if (IERC20(token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           IERC20(token0).approve(deployedNonfungiblePositionManager, type(uint256).max);
+           TransferHelper.safeApprove(token0, deployedNonfungiblePositionManager, type(uint256).max);
         }
 
         if (IERC20(token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           IERC20(token1).approve(deployedNonfungiblePositionManager, type(uint256).max);
+           TransferHelper.safeApprove(token1, deployedNonfungiblePositionManager, type(uint256).max);
         }
 
         INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), type(uint128).max, type(uint128).max);
-        (uint256 amount0, uint256 amount1) = NFPM.collect(CP);
+        (uint256 amount0collected, uint256 amount1collected) = NFPM.collect(CP);
 
-        INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline);
-        NFPM.increaseLiquidity(IC);
+        INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0collected, amount1collected, 0, 0, deadline);
+        (, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
+
+
     }
 
     function onERC721Received( address operator, address from, uint256 tokenID, bytes calldata data ) public override returns (bytes4) {
