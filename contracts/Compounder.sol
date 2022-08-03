@@ -25,9 +25,10 @@ contract Compounder is IERC721Receiver, Ownable {
 
     mapping(uint256 => Position) public tokenIDtoPosition; //this is initalized for a tokenID when it is sent
 
+
     mapping(address => uint256[]) public addressToTokenIds;
     mapping(uint256 => address) public tokenIDtoAddress;
-
+    
     //takes an address and returns an array of the tokenIDs they've staked
     function addressOwns(address addy) public view returns(uint[] memory) {
         return addressToTokenIds[addy];
@@ -36,6 +37,10 @@ contract Compounder is IERC721Receiver, Ownable {
     //takes a tokenID and returns the address that staked it
     function ownerOfTokenID(uint256 tokenID) public view returns(address) {
         return tokenIDtoAddress[tokenID];
+    }
+
+    function positionOfTokenID(uint256 tokenID) public view returns(Position memory) {
+        return tokenIDtoPosition[tokenID];
     }
 
     //stakes a tokenID
@@ -51,7 +56,6 @@ contract Compounder is IERC721Receiver, Ownable {
         delete addressToTokenIds[msg.sender][index];
         delete tokenIDtoAddress[tokenIDRetrieved];
     }
-
 
     function sendMultiple(uint256[] memory tokenIDs) public {
         uint i = 0;
@@ -89,6 +93,15 @@ contract Compounder is IERC721Receiver, Ownable {
 
         addressToTokenIds[from].push(tokenID);
         tokenIDtoAddress[tokenID] = from;
+
+        (, , address token0, address token1, , , , , , , , ) = NFPM.positions(tokenID);
+
+        tokenIDtoPosition[tokenID] = Position(
+            token0,
+            token1,
+            0,
+            0
+        );
 
         return this.onERC721Received.selector;
     }

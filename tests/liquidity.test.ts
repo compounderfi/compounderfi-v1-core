@@ -74,7 +74,16 @@ describe("Compounder", () => {
   it("sendSingle", async () => {
     const tokenIDminted = await mint(uniswap, accounts[0], mainSignerAddress);
     await compounder.connect(accounts[0]).send(tokenIDminted);
-    const addresses = await compounder.addressToSentIn(mainSignerAddress);
-    expect(addresses).to.equal([tokenIDminted]);
+    
+    const ArrayOfOwnerStaked: BigNumber[] = await compounder.addressOwns(mainSignerAddress);
+    expect(ArrayOfOwnerStaked[0].toNumber()).to.be.equal(tokenIDminted)
+
+    const addressThatSent = await compounder.ownerOfTokenID(tokenIDminted);
+    expect(addressThatSent).to.be.equal(mainSignerAddress);
+
+    const resp = await compounder.positionOfTokenID(tokenIDminted);
+    expect(resp[0]).to.be.equal(USDC);
+    expect(resp[1]).to.be.equal(USDT);
+    
   })
 })
