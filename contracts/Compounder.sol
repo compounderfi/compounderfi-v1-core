@@ -13,6 +13,10 @@ import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol"; //for hardh
 import "hardhat/console.sol";
 import "prb-math/contracts/PRBMath.sol";
 
+interface IERC20Extented is IERC20 {
+    function decimals() external view returns (uint8);
+}
+
 contract Compounder is IERC721Receiver, Ownable {
     address constant deployedNonfungiblePositionManager = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
@@ -24,6 +28,8 @@ contract Compounder is IERC721Receiver, Ownable {
     struct Position {
         address token0;
         address token1;
+        uint8 decimals0;
+        uint8 decimals1;
         uint256 unclaimedToken0; //unclaimed on compounder, not on uniswap
         uint256 unclaimedToken1; 
     }
@@ -76,6 +82,9 @@ contract Compounder is IERC721Receiver, Ownable {
         }
     }
 
+
+
+
     function findPrice(address tokenAddress) public view returns(int256) { //returns the price in ETH
         if (tokenAddress == WETH) return 10**18; //1 weth is equal to 10^18 wei 
         return CLFR.latestAnswer(tokenAddress, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
@@ -88,6 +97,9 @@ contract Compounder is IERC721Receiver, Ownable {
     function calculatePrincipal(uint256 amount0, int256 amount0Price, uint8 decimals0, uint256 amount1, int256 amount1Price, uint8 decimals1) private pure returns(uint256) {
         return assetToETH(amount0, amount0Price, decimals0) + assetToETH(amount1, amount1Price, decimals1);
     }
+
+
+
 
     function doSingleUpkeep(uint256 tokenID, uint256 deadline) public {
 
@@ -112,11 +124,12 @@ contract Compounder is IERC721Receiver, Ownable {
 
         int256 token0rate = findPrice(token0);
         int256 token1rate = findPrice(token1);
-        
-
+        uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
+        console.log(gas);
+        console.log(tx.gasprice);
         if (amount0collected == amount0added) {
             uint256 excessAmount1 = amount1collected - amount1added;
-            
+            uint256 excessETH = 1;
         } else {
 
         }
@@ -129,10 +142,12 @@ contract Compounder is IERC721Receiver, Ownable {
         tokenIDtoAddress[tokenID] = from;
 
         (, , address token0, address token1, , , , , , , , ) = NFPM.positions(tokenID);
-
+        
         tokenIDtoPosition[tokenID] = Position(
             token0,
             token1,
+            IERC20Extented(token0).decimals(),
+            IERC20Extented(token1).decimals(),
             0,
             0
         );

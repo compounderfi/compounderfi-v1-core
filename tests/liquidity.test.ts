@@ -108,6 +108,7 @@ describe("Compounder", () => {
     expect(addressThatSent).to.be.equal(mainSignerAddress);
 
     const resp = await compounder.positionOfTokenID(tokenIDminted);
+    console.log(resp)
     expect(resp[0]).to.be.equal(USDC);
     expect(resp[1]).to.be.equal(USDT);
     
@@ -119,7 +120,7 @@ describe("Compounder", () => {
     await swap(accounts[0], USDC, USDT);
     await swap(accounts[0], USDT, USDC);
 
-    const x = await compounder.connect(accounts[0]).doSingleUpkeep(tokenIDminted, USDC, USDT, deadline);
+    const x = await compounder.connect(accounts[0]).doSingleUpkeep(tokenIDminted, deadline);
 
   })
 })
