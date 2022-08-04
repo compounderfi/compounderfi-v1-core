@@ -30,10 +30,10 @@ contract Compounder is IERC721Receiver, Ownable {
         address token1;
         uint8 decimals0;
         uint8 decimals1;
-        uint256 unclaimedToken0; //unclaimed on compounder, not on uniswap
-        uint256 unclaimedToken1; 
     }
 
+    mapping(address => mapping(address => uint256)) upkeeperToTokenToTokenOwned;
+    mapping(uint256 => mapping(address => uint256)) tokenIDtoTokenToExcess;
     mapping(uint256 => Position) public tokenIDtoPosition; //this is initalized for a tokenID when it is sent
 
 
@@ -99,39 +99,70 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
 
+    function manageExcess(uint256 tokenID, address token, uint256 principal, uint256 amountCollected, uint256 amountAdded, int256 tokenPrice, uint8 decimals) private {
+        
 
+        uint256 excessAmount = amountCollected - amountAdded;
+        uint256 excessETH = assetToETH(excessAmount, tokenPrice, decimals);
+
+        //these represent fees
+        uint256 share = PRBMath.mulDiv(excessETH, 3, 100); //3% of remaining includes the caller fee and the platform fee
+
+        uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
+        uint256 totalFees = share + gas;
+
+        uint256 remaining = excessETH - share; //remaining goes to an allowance of remainding that can be used for the next
+        require (excessETH > totalFees);
+
+        tokenIDtoTokenToExcess[tokenID][token] += remaining;
+        upkeeperToTokenToTokenOwned[tx.origin][token] += totalFees; //total fees will be later split with the platform
+
+
+
+    }
 
     function doSingleUpkeep(uint256 tokenID, uint256 deadline) public {
 
-        address token0 = tokenIDtoPosition[tokenID].token0;
-        address token1 = tokenIDtoPosition[tokenID].token1;
+        Position memory position = tokenIDtoPosition[tokenID];
 
         //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets
-        if (IERC20(token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           TransferHelper.safeApprove(token0, deployedNonfungiblePositionManager, type(uint256).max);
+        if (IERC20(position.token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           TransferHelper.safeApprove(position.token0, deployedNonfungiblePositionManager, type(uint256).max);
         }
 
-        if (IERC20(token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           TransferHelper.safeApprove(token1, deployedNonfungiblePositionManager, type(uint256).max);
+        if (IERC20(position.token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           TransferHelper.safeApprove(position.token1, deployedNonfungiblePositionManager, type(uint256).max);
         }
         
         INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), type(uint128).max, type(uint128).max);
         (uint256 amount0collected, uint256 amount1collected) = NFPM.collect(CP);
 
+        //allow for the excess from previous compounds to be used
+        amount0collected += tokenIDtoTokenToExcess[tokenID][position.token0];
+        amount1collected += tokenIDtoTokenToExcess[tokenID][position.token1];
+
         INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0collected, amount1collected, 0, 0, deadline);
         (, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
 
 
-        int256 token0rate = findPrice(token0);
-        int256 token1rate = findPrice(token1);
-        uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
-        console.log(gas);
-        console.log(tx.gasprice);
+        int256 token0rate = findPrice(position.token0);
+        int256 token1rate = findPrice(position.token1);
+
+        uint256 principalInEth = calculatePrincipal(
+            amount0added, token0rate, position.decimals0,
+            amount1added, token1rate, position.decimals1
+        );
+
         if (amount0collected == amount0added) {
             uint256 excessAmount1 = amount1collected - amount1added;
-            uint256 excessETH = 1;
+            uint256 excessETH = assetToETH(excessAmount1, token1rate, position.decimals1);
+            console.log(excessAmount1);
+            console.log(excessETH);
         } else {
-
+            uint256 excessAmount0 = amount0collected - amount0added;
+            uint256 excessETH = assetToETH(excessAmount0, token0rate, position.decimals0);
+            console.log(excessAmount0);
+            console.log(excessETH);
         }
     }
 
@@ -147,10 +178,11 @@ contract Compounder is IERC721Receiver, Ownable {
             token0,
             token1,
             IERC20Extented(token0).decimals(),
-            IERC20Extented(token1).decimals(),
-            0,
-            0
+            IERC20Extented(token1).decimals()
         );
+
+        tokenIDtoTokenToExcess[tokenID][token0] = 0;
+        tokenIDtoTokenToExcess[tokenID][token1] = 0;
 
         return this.onERC721Received.selector;
     }
