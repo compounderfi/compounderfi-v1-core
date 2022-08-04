@@ -108,7 +108,7 @@ describe("Compounder", () => {
     expect(addressThatSent).to.be.equal(mainSignerAddress);
 
     const resp = await compounder.positionOfTokenID(tokenIDminted);
-    
+    console.log(resp)
     expect(resp[0]).to.be.equal(USDC);
     expect(resp[1]).to.be.equal(USDT);
     

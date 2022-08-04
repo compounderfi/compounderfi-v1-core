@@ -4,12 +4,18 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
-import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
-import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@chainlink/contracts/src/v0.8/interfaces/FeedRegistryInterface.sol";
+
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
+import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import "@uniswap/v3-core/contracts/libraries/TickMath.sol";
+import "@uniswap/v3-periphery/contracts/interfaces/INonfungiblePositionManager.sol";
 import "@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol"; //for hardhat artifact
+import "@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol";
+import "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
+
+import "@chainlink/contracts/src/v0.8/interfaces/FeedRegistryInterface.sol";
+
 import "hardhat/console.sol";
 import "prb-math/contracts/PRBMath.sol";
 
@@ -18,18 +24,24 @@ interface IERC20Extented is IERC20 {
 }
 
 contract Compounder is IERC721Receiver, Ownable {
+    address constant UniswapV3Factory = 0x1F98431c8aD98523631AE4a59f267346ea31F984;
     address constant deployedNonfungiblePositionManager = 0xC36442b4a4522E871399CD717aBDD847Ab11FE88;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address constant chainLinkFeedRegistry = 0x47Fb2585D2C56Fe188D0E6ec628a38b74fCeeeDf;
     
-    INonfungiblePositionManager public constant NFPM = INonfungiblePositionManager(deployedNonfungiblePositionManager);
-    FeedRegistryInterface public constant CLFR = FeedRegistryInterface(chainLinkFeedRegistry);
-    
+    INonfungiblePositionManager private constant NFPM = INonfungiblePositionManager(deployedNonfungiblePositionManager);
+    FeedRegistryInterface private constant CLFR = FeedRegistryInterface(chainLinkFeedRegistry);
+    IUniswapV3Factory private constant uniswapFactory = IUniswapV3Factory(UniswapV3Factory);
+
     struct Position {
         address token0;
         address token1;
         uint8 decimals0;
         uint8 decimals1;
+        uint128 liquidity;
+        uint160 sqrtPrice0X96;
+        uint160 sqrtPrice1X96;
+        IUniswapV3Pool pool;
     }
 
     mapping(address => mapping(address => uint256)) upkeeperToTokenToTokenOwned;
@@ -82,26 +94,35 @@ contract Compounder is IERC721Receiver, Ownable {
         }
     }
 
+    
+    function calculatePrincipal(Position memory position, int256 amount0Price, int256 amount1Price) private view returns(uint256) {
+        (uint160 sqrtPriceX96, , , , , ,) = position.pool.slot0();
+        (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
+            sqrtPriceX96,
+            position.sqrtPrice0X96,
+            position.sqrtPrice1X96,
+            position.liquidity
+        );
+        return calculate(amount0, amount0Price, position.decimals0, amount1, amount1Price, position.decimals1);
 
+    }
+    
 
-
-    function findPrice(address tokenAddress) public view returns(int256) { //returns the price in ETH
+    function findPrice(address tokenAddress) private view returns(int256) { //returns the price in ETH
         if (tokenAddress == WETH) return 10**18; //1 weth is equal to 10^18 wei 
         return CLFR.latestAnswer(tokenAddress, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
     }   
 
-    function assetToETH(uint256 amount, int256 price, uint8 decimals) public pure returns(uint256) {
+    function assetToETH(uint256 amount, int256 price, uint8 decimals) private pure returns(uint256) {
         return PRBMath.mulDiv(amount, uint256(price), 10**(decimals));
     }
 
-    function calculatePrincipal(uint256 amount0, int256 amount0Price, uint8 decimals0, uint256 amount1, int256 amount1Price, uint8 decimals1) private pure returns(uint256) {
+    function calculate(uint256 amount0, int256 amount0Price, uint8 decimals0, uint256 amount1, int256 amount1Price, uint8 decimals1) private pure returns(uint256) {
         return assetToETH(amount0, amount0Price, decimals0) + assetToETH(amount1, amount1Price, decimals1);
     }
 
 
     function manageExcess(uint256 tokenID, address token, uint256 principal, uint256 amountCollected, uint256 amountAdded, int256 tokenPrice, uint8 decimals) private {
-        
-
         uint256 excessAmount = amountCollected - amountAdded;
         uint256 excessETH = assetToETH(excessAmount, tokenPrice, decimals);
 
@@ -117,15 +138,13 @@ contract Compounder is IERC721Receiver, Ownable {
         tokenIDtoTokenToExcess[tokenID][token] += remaining;
         upkeeperToTokenToTokenOwned[tx.origin][token] += totalFees; //total fees will be later split with the platform
 
-
-
     }
 
     function doSingleUpkeep(uint256 tokenID, uint256 deadline) public {
 
-        Position memory position = tokenIDtoPosition[tokenID];
+        Position storage position = tokenIDtoPosition[tokenID];
 
-        //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets
+        //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets that have chainlink /ETH pairs
         if (IERC20(position.token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
            TransferHelper.safeApprove(position.token0, deployedNonfungiblePositionManager, type(uint256).max);
         }
@@ -142,28 +161,26 @@ contract Compounder is IERC721Receiver, Ownable {
         amount1collected += tokenIDtoTokenToExcess[tokenID][position.token1];
 
         INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0collected, amount1collected, 0, 0, deadline);
-        (, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
+        (uint128 liquidity, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
 
 
         int256 token0rate = findPrice(position.token0);
         int256 token1rate = findPrice(position.token1);
 
-        uint256 principalInEth = calculatePrincipal(
+        uint256 earningsInEth = calculate(
             amount0added, token0rate, position.decimals0,
             amount1added, token1rate, position.decimals1
         );
 
+        uint256 principalInEth = calculatePrincipal(position, token0rate, token1rate);
+        position.liquidity = liquidity;
+
         if (amount0collected == amount0added) {
-            uint256 excessAmount1 = amount1collected - amount1added;
-            uint256 excessETH = assetToETH(excessAmount1, token1rate, position.decimals1);
-            console.log(excessAmount1);
-            console.log(excessETH);
+
         } else {
-            uint256 excessAmount0 = amount0collected - amount0added;
-            uint256 excessETH = assetToETH(excessAmount0, token0rate, position.decimals0);
-            console.log(excessAmount0);
-            console.log(excessETH);
+
         }
+        
     }
 
     function onERC721Received( address operator, address from, uint256 tokenID, bytes calldata data ) public override returns (bytes4) {
@@ -172,13 +189,17 @@ contract Compounder is IERC721Receiver, Ownable {
         addressToTokenIds[from].push(tokenID);
         tokenIDtoAddress[tokenID] = from;
 
-        (, , address token0, address token1, , , , , , , , ) = NFPM.positions(tokenID);
+        (, , address token0, address token1, uint24 fee, int24 tickLower , int24 tickUpper , uint128 liquidity , , , , ) = NFPM.positions(tokenID);
         
         tokenIDtoPosition[tokenID] = Position(
             token0,
             token1,
             IERC20Extented(token0).decimals(),
-            IERC20Extented(token1).decimals()
+            IERC20Extented(token1).decimals(),
+            liquidity,
+            TickMath.getSqrtRatioAtTick(tickLower),
+            TickMath.getSqrtRatioAtTick(tickUpper),
+            IUniswapV3Pool(uniswapFactory.getPool(token0, token1, fee))
         );
 
         tokenIDtoTokenToExcess[tokenID][token0] = 0;
