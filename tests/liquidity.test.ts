@@ -21,7 +21,7 @@ async function mint(account: Signer) {
        USDT,
        100, //0.01% fee tier
        -5, //min tick
-       -2, //max tick
+       2, //max tick
        10000000n * 10n ** 6n, //add 10 million in liqudity
        10000000n * 10n ** 6n,
        0,
@@ -30,10 +30,18 @@ async function mint(account: Signer) {
        deadline
       ]
       )
+    
     const receipt = await txn.wait();
-    const increaseLiqLog = receipt.events[4];
-    const tokenID: BigNumber = increaseLiqLog.args[0];
-    return tokenID.toNumber();
+    for (const rec of receipt.events) {
+      if (rec.event == "IncreaseLiquidity") {
+        const tokenID: BigNumber = rec.args[0];
+        const amount0added: BigNumber = rec.args[2];
+        const amount1added: BigNumber = rec.args[3];
+        return [tokenID.toNumber(), amount0added.toNumber(), amount1added.toNumber()];
+      }
+    }
+
+    return [0, 0, 0];
 }
 
 async function swap(account: Signer, tokenA: String, tokenB: String) {
@@ -97,7 +105,7 @@ describe("Compounder", () => {
 
   it("sendSingle", async () => {
 
-    const tokenIDminted = await mint(accounts[0]);
+    const [tokenIDminted, amount0added, amount1added] = await mint(accounts[0]);
 
     await compounder.connect(accounts[0]).send(tokenIDminted);
 

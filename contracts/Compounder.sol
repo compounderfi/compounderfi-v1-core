@@ -5,6 +5,7 @@ pragma solidity ^0.8.0;
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Factory.sol";
 import "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
@@ -17,7 +18,6 @@ import "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/FeedRegistryInterface.sol";
 
 import "hardhat/console.sol";
-import "prb-math/contracts/PRBMath.sol";
 
 interface IERC20Extented is IERC20 {
     function decimals() external view returns (uint8);
@@ -44,6 +44,12 @@ contract Compounder is IERC721Receiver, Ownable {
         IUniswapV3Pool pool;
     }
 
+    struct TokenCalculation {
+        uint256 amount;
+        int256 price;
+        uint8 decimals;
+    }
+    
     mapping(address => mapping(address => uint256)) upkeeperToTokenToTokenOwned;
     mapping(uint256 => mapping(address => uint256)) tokenIDtoTokenToExcess;
     mapping(uint256 => Position) public tokenIDtoPosition; //this is initalized for a tokenID when it is sent
@@ -103,7 +109,10 @@ contract Compounder is IERC721Receiver, Ownable {
             position.sqrtPrice1X96,
             position.liquidity
         );
-        return calculate(amount0, amount0Price, position.decimals0, amount1, amount1Price, position.decimals1);
+        return calculate(
+            TokenCalculation(amount0, amount0Price, position.decimals0),
+            TokenCalculation(amount1, amount1Price, position.decimals1)
+        );
 
     }
     
@@ -113,31 +122,26 @@ contract Compounder is IERC721Receiver, Ownable {
         return CLFR.latestAnswer(tokenAddress, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
     }   
 
-    function assetToETH(uint256 amount, int256 price, uint8 decimals) private pure returns(uint256) {
-        return PRBMath.mulDiv(amount, uint256(price), 10**(decimals));
+    function assetToETH(TokenCalculation memory token) private pure returns(uint256) {
+        return Math.mulDiv(token.amount, uint256(token.price), 10**(token.decimals));
     }
 
-    function calculate(uint256 amount0, int256 amount0Price, uint8 decimals0, uint256 amount1, int256 amount1Price, uint8 decimals1) private pure returns(uint256) {
-        return assetToETH(amount0, amount0Price, decimals0) + assetToETH(amount1, amount1Price, decimals1);
+    function ETHtoAsset(TokenCalculation memory token) private pure returns(uint256) {
+        return Math.mulDiv(token.amount, 10**(token.decimals), uint256(token.price));
+    }
+
+    function calculate(TokenCalculation memory tokenA, TokenCalculation memory tokenB) private pure returns(uint256) {
+        return assetToETH(tokenA) + assetToETH(tokenB);
     }
 
 
-    function manageExcess(uint256 tokenID, address token, uint256 principal, uint256 amountCollected, uint256 amountAdded, int256 tokenPrice, uint8 decimals) private {
-        uint256 excessAmount = amountCollected - amountAdded;
-        uint256 excessETH = assetToETH(excessAmount, tokenPrice, decimals);
-
+    function manageExcess(uint256 excessETH) private returns (uint256 totalFeesETH) {
         //these represent fees
-        uint256 share = PRBMath.mulDiv(excessETH, 3, 100); //3% of remaining includes the caller fee and the platform fee
-
+        uint256 share = Math.mulDiv(excessETH, 3, 100); //3% of remaining includes the caller fee and the platform fee
         uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
-        uint256 totalFees = share + gas;
+        totalFeesETH = share + gas;
 
-        uint256 remaining = excessETH - share; //remaining goes to an allowance of remainding that can be used for the next
-        require (excessETH > totalFees);
-
-        tokenIDtoTokenToExcess[tokenID][token] += remaining;
-        upkeeperToTokenToTokenOwned[tx.origin][token] += totalFees; //total fees will be later split with the platform
-
+        require (excessETH > totalFeesETH);
     }
 
     function doSingleUpkeep(uint256 tokenID, uint256 deadline) public {
@@ -163,23 +167,53 @@ contract Compounder is IERC721Receiver, Ownable {
         INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0collected, amount1collected, 0, 0, deadline);
         (uint128 liquidity, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
 
-
         int256 token0rate = findPrice(position.token0);
         int256 token1rate = findPrice(position.token1);
 
         uint256 earningsInEth = calculate(
-            amount0added, token0rate, position.decimals0,
-            amount1added, token1rate, position.decimals1
+            TokenCalculation(amount0added, token0rate, position.decimals0),
+            TokenCalculation(amount1added, token1rate, position.decimals1)
         );
 
         uint256 principalInEth = calculatePrincipal(position, token0rate, token1rate);
+        //console.log(principalInEth);
+        //console.log(earningsInEth);
         position.liquidity = liquidity;
 
+        uint256 feesInEth;
+        uint256 excessAfterFeesInEth;
         if (amount0collected == amount0added) {
+            uint8 decimals = position.decimals1;
+            TokenCalculation memory excessArg = TokenCalculation(amount1collected-amount1added, token1rate, decimals);
+            uint256 excessETH = assetToETH(excessArg);
+            
+            feesInEth = manageExcess(excessETH);
+            excessAfterFeesInEth = excessETH - feesInEth; //remaining goes to an allowance of remainding that can be used for the next
+            
+            TokenCalculation memory feesInTokenArg = TokenCalculation(feesInEth, token1rate, decimals);
+            uint256 feesInToken = ETHtoAsset(feesInTokenArg);
+            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(excessAfterFeesInEth, token1rate, decimals));
+            
+            tokenIDtoTokenToExcess[tokenID][position.token1] += excessAfterFeesInToken;
+            upkeeperToTokenToTokenOwned[msg.sender][position.token1] += feesInToken;
 
+            console.log(feesInToken, excessAfterFeesInToken);
         } else {
+            uint8 decimals = position.decimals0;
+            TokenCalculation memory tc = TokenCalculation(amount0collected-amount0added, token0rate, decimals);
+            uint256 excessETH = assetToETH(tc);
 
+            feesInEth = manageExcess(excessETH);
+            
+            uint256 feesInToken = ETHtoAsset(TokenCalculation(feesInEth, token0rate, decimals));
+            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(feesInToken, token0rate, decimals));
+            
+            tokenIDtoTokenToExcess[tokenID][position.token0] += excessAfterFeesInToken;
+            upkeeperToTokenToTokenOwned[msg.sender][position.token0] += feesInToken;
+
+            console.log(feesInToken, excessAfterFeesInToken);
         }
+        require(earningsInEth > Math.sqrt(principalInEth * feesInEth), "Doesn't pass the compound requirements");
         
     }
 

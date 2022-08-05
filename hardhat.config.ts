@@ -31,7 +31,7 @@ module.exports = {
     hardhat: {
       forking: {
         url: "https://eth-mainnet.g.alchemy.com/v2/wg9DkB-JY9NwnIUmYAC7V0lR_I7DIjLk",
-        blockNumber: 15259360 
+        blockNumber: 15277386  
       },
     },
   },
