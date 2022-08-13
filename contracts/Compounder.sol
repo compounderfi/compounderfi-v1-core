@@ -161,14 +161,6 @@ contract Compounder is IERC721Receiver, Ownable {
         UpkeepState memory state;
         Position memory position = tokenIDtoPosition[tokenID];
 
-        //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets that have chainlink /ETH pairs
-        if (IERC20(position.token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           TransferHelper.safeApprove(position.token0, deployedNonfungiblePositionManager, type(uint256).max);
-        }
-
-        if (IERC20(position.token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
-           TransferHelper.safeApprove(position.token1, deployedNonfungiblePositionManager, type(uint256).max);
-        }
          
         INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), type(uint128).max, type(uint128).max);
         (state.amount0collected, state.amount1collected) = NFPM.collect(CP);
@@ -230,13 +222,15 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
     function onERC721Received( address operator, address from, uint256 tokenID, bytes calldata data ) public override returns (bytes4) {
-        require(operator == address(this));
-
-        addressToTokenIds[from].push(tokenID);
-        tokenIDtoAddress[tokenID] = from;
+        require(msg.sender == address(deployedNonfungiblePositionManager), "Not a uniswap position");
 
         (, , address token0, address token1, uint24 fee, int24 tickLower , int24 tickUpper ,  , , , , ) = NFPM.positions(tokenID);
-        
+
+        //ensures that there is a chainlink ETH oracle pair associated with the tokens
+        require(CLFR.latestAnswer(token0, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
+        require(CLFR.latestAnswer(token1, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
+
+
         tokenIDtoPosition[tokenID] = Position(
             token0,
             token1,
@@ -250,6 +244,16 @@ contract Compounder is IERC721Receiver, Ownable {
 
         tokenIDtoTokenToExcess[tokenID][token0] = 0;
         tokenIDtoTokenToExcess[tokenID][token1] = 0;
+        addressToTokenIds[from].push(tokenID);
+        tokenIDtoAddress[tokenID] = from;
+
+        if (IERC20(token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           TransferHelper.safeApprove(token0, deployedNonfungiblePositionManager, type(uint256).max);
+        }
+
+        if (IERC20(token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
+           TransferHelper.safeApprove(token1, deployedNonfungiblePositionManager, type(uint256).max);
+        }
 
         return this.onERC721Received.selector;
     }
