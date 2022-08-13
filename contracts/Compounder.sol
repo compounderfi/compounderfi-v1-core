@@ -38,10 +38,10 @@ contract Compounder is IERC721Receiver, Ownable {
         address token1;
         uint8 decimals0;
         uint8 decimals1;
-        uint128 liquidity;
         uint160 sqrtPrice0X96;
         uint160 sqrtPrice1X96;
         IUniswapV3Pool pool;
+        uint256 tokenID;
     }
 
     struct TokenCalculation {
@@ -103,11 +103,12 @@ contract Compounder is IERC721Receiver, Ownable {
     
     function calculatePrincipal(Position memory position, int256 amount0Price, int256 amount1Price) private view returns(uint256) {
         (uint160 sqrtPriceX96, , , , , ,) = position.pool.slot0();
+        (, , , , , , , uint128 liquidity , , , , ) = NFPM.positions(position.tokenID);
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
             position.sqrtPrice0X96,
             position.sqrtPrice1X96,
-            position.liquidity
+            liquidity
         );
         return calculate(
             TokenCalculation(amount0, amount0Price, position.decimals0),
@@ -135,8 +136,9 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
 
-    function manageExcess(uint256 excessETH) private returns (uint256 totalFeesETH) {
-        //these represent fees
+
+    function manageExcess(uint256 excessETH) private view returns (uint256 totalFeesETH) {
+         //these represent fees
         uint256 share = Math.mulDiv(excessETH, 3, 100); //3% of remaining includes the caller fee and the platform fee
         uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
         totalFeesETH = share + gas;
@@ -144,9 +146,20 @@ contract Compounder is IERC721Receiver, Ownable {
         require (excessETH > totalFeesETH);
     }
 
-    function doSingleUpkeep(uint256 tokenID, uint256 deadline) public {
+    struct UpkeepState {
+        uint256 amount0collected;
+        uint256 amount1collected;
+        uint256 amount0added;
+        uint256 amount1added;
+        int256 token0rate;
+        int256 token1rate;
+        uint256 earningsInEth;
+        uint256 principalInEth;
+    }
 
-        Position storage position = tokenIDtoPosition[tokenID];
+    function doSingleUpkeep(uint256 tokenID) public {
+        UpkeepState memory state;
+        Position memory position = tokenIDtoPosition[tokenID];
 
         //temporary solution to approvals -- optimally should be done in the constructor with the 20 or so assets that have chainlink /ETH pairs
         if (IERC20(position.token0).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
@@ -156,64 +169,63 @@ contract Compounder is IERC721Receiver, Ownable {
         if (IERC20(position.token1).allowance(address(this), deployedNonfungiblePositionManager) == 0) {
            TransferHelper.safeApprove(position.token1, deployedNonfungiblePositionManager, type(uint256).max);
         }
-        
+         
         INonfungiblePositionManager.CollectParams memory CP = INonfungiblePositionManager.CollectParams(tokenID, address(this), type(uint128).max, type(uint128).max);
-        (uint256 amount0collected, uint256 amount1collected) = NFPM.collect(CP);
-
+        (state.amount0collected, state.amount1collected) = NFPM.collect(CP);
+        
         //allow for the excess from previous compounds to be used
-        amount0collected += tokenIDtoTokenToExcess[tokenID][position.token0];
-        amount1collected += tokenIDtoTokenToExcess[tokenID][position.token1];
+        state.amount0collected += tokenIDtoTokenToExcess[tokenID][position.token0];
+        state.amount1collected += tokenIDtoTokenToExcess[tokenID][position.token1];
 
-        INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, amount0collected, amount1collected, 0, 0, deadline);
-        (uint128 liquidity, uint256 amount0added, uint256 amount1added) = NFPM.increaseLiquidity(IC);
+        INonfungiblePositionManager.IncreaseLiquidityParams memory IC = INonfungiblePositionManager.IncreaseLiquidityParams(tokenID, state.amount0collected, state.amount1collected, 0, 0, block.timestamp);
+        (, state.amount0added, state.amount1added) = NFPM.increaseLiquidity(IC);
 
-        int256 token0rate = findPrice(position.token0);
-        int256 token1rate = findPrice(position.token1);
+        state.token0rate = findPrice(position.token0);
+        state.token1rate = findPrice(position.token1);
 
-        uint256 earningsInEth = calculate(
-            TokenCalculation(amount0added, token0rate, position.decimals0),
-            TokenCalculation(amount1added, token1rate, position.decimals1)
+        state.earningsInEth = calculate(
+            TokenCalculation(state.amount0added, state.token0rate, position.decimals0),
+            TokenCalculation(state.amount1added, state.token1rate, position.decimals1)
         );
 
-        uint256 principalInEth = calculatePrincipal(position, token0rate, token1rate);
-        //console.log(principalInEth);
-        //console.log(earningsInEth);
-        position.liquidity = liquidity;
+        state.principalInEth = calculatePrincipal(position, state.token0rate, state.token1rate);
+
 
         uint256 feesInEth;
         uint256 excessAfterFeesInEth;
-        if (amount0collected == amount0added) {
+        if (state.amount0collected == state.amount0added) {
             uint8 decimals = position.decimals1;
-            TokenCalculation memory excessArg = TokenCalculation(amount1collected-amount1added, token1rate, decimals);
+            TokenCalculation memory excessArg = TokenCalculation(state.amount1collected-state.amount1added, state.token1rate, decimals);
             uint256 excessETH = assetToETH(excessArg);
             
             feesInEth = manageExcess(excessETH);
             excessAfterFeesInEth = excessETH - feesInEth; //remaining goes to an allowance of remainding that can be used for the next
             
-            TokenCalculation memory feesInTokenArg = TokenCalculation(feesInEth, token1rate, decimals);
+            TokenCalculation memory feesInTokenArg = TokenCalculation(feesInEth, state.token1rate, decimals);
             uint256 feesInToken = ETHtoAsset(feesInTokenArg);
-            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(excessAfterFeesInEth, token1rate, decimals));
+            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(excessAfterFeesInEth, state.token1rate, decimals));
             
             tokenIDtoTokenToExcess[tokenID][position.token1] += excessAfterFeesInToken;
             upkeeperToTokenToTokenOwned[msg.sender][position.token1] += feesInToken;
 
             console.log(feesInToken, excessAfterFeesInToken);
+
         } else {
             uint8 decimals = position.decimals0;
-            TokenCalculation memory tc = TokenCalculation(amount0collected-amount0added, token0rate, decimals);
+            TokenCalculation memory tc = TokenCalculation(state.amount0collected-state.amount0added, state.token0rate, decimals);
             uint256 excessETH = assetToETH(tc);
 
             feesInEth = manageExcess(excessETH);
             
-            uint256 feesInToken = ETHtoAsset(TokenCalculation(feesInEth, token0rate, decimals));
-            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(feesInToken, token0rate, decimals));
+            uint256 feesInToken = ETHtoAsset(TokenCalculation(feesInEth, state.token0rate, decimals));
+            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(feesInToken, state.token0rate, decimals));
             
             tokenIDtoTokenToExcess[tokenID][position.token0] += excessAfterFeesInToken;
             upkeeperToTokenToTokenOwned[msg.sender][position.token0] += feesInToken;
 
             console.log(feesInToken, excessAfterFeesInToken);
         }
-        require(earningsInEth > Math.sqrt(principalInEth * feesInEth), "Doesn't pass the compound requirements");
+        require(state.earningsInEth > Math.sqrt(state.principalInEth * feesInEth), "Doesn't pass the compound requirements");
         
     }
 
@@ -223,17 +235,17 @@ contract Compounder is IERC721Receiver, Ownable {
         addressToTokenIds[from].push(tokenID);
         tokenIDtoAddress[tokenID] = from;
 
-        (, , address token0, address token1, uint24 fee, int24 tickLower , int24 tickUpper , uint128 liquidity , , , , ) = NFPM.positions(tokenID);
+        (, , address token0, address token1, uint24 fee, int24 tickLower , int24 tickUpper ,  , , , , ) = NFPM.positions(tokenID);
         
         tokenIDtoPosition[tokenID] = Position(
             token0,
             token1,
             IERC20Extented(token0).decimals(),
             IERC20Extented(token1).decimals(),
-            liquidity,
             TickMath.getSqrtRatioAtTick(tickLower),
             TickMath.getSqrtRatioAtTick(tickUpper),
-            IUniswapV3Pool(uniswapFactory.getPool(token0, token1, fee))
+            IUniswapV3Pool(uniswapFactory.getPool(token0, token1, fee)),
+            tokenID
         );
 
         tokenIDtoTokenToExcess[tokenID][token0] = 0;
