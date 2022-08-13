@@ -174,6 +174,9 @@ contract Compounder is IERC721Receiver, Ownable {
             tokenIDtoTokenToExcess[tokenID][token] += excessAfterFeesInToken;
             upkeeperToTokenToTokenOwned[msg.sender][token] += feesInToken;
 
+            console.log(earningsInEth);
+            console.log(principalInEth);
+            console.log(feesInEth);
             require(earningsInEth > Math.sqrt(principalInEth * feesInEth), "Doesn't pass the compound requirements");
     }
 
