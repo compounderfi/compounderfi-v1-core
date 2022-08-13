@@ -137,13 +137,44 @@ contract Compounder is IERC721Receiver, Ownable {
 
 
 
-    function manageExcess(uint256 excessETH) private view returns (uint256 totalFeesETH) {
+    function calculateFees(uint256 excessETH) private view returns (uint256 totalFeesETH) {
          //these represent fees
         uint256 share = Math.mulDiv(excessETH, 3, 100); //3% of remaining includes the caller fee and the platform fee
         uint256 gas = tx.gasprice * 300000; //estimate 300,000 gas limit; this is the gas in wei
         totalFeesETH = share + gas;
 
         require (excessETH > totalFeesETH);
+    }
+
+    function handleExcess(uint256 tokenID, address token, uint8 decimals, uint256 amountCollected, uint256 amountAdded, int256 rate, uint256 earningsInEth, uint256 principalInEth) private {
+
+
+            //excessETH represents the price of the excess amount of tokens in ETH
+            uint256 excessETH = assetToETH(
+                TokenCalculation(
+                    amountCollected-amountAdded,
+                    rate,
+                    decimals
+                )
+            );
+            
+            uint256 feesInEth = calculateFees(excessETH); //ensures there is enough fees to cover gas
+            uint256 excessAfterFeesInEth = excessETH - feesInEth; //remaining goes to an allowance of remainding that can be used for the next
+
+
+            uint256 feesInToken = ETHtoAsset(
+                TokenCalculation(
+                    feesInEth,
+                    rate,
+                    decimals
+                )
+            );
+            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(excessAfterFeesInEth, rate, decimals));
+            
+            tokenIDtoTokenToExcess[tokenID][token] += excessAfterFeesInToken;
+            upkeeperToTokenToTokenOwned[msg.sender][token] += feesInToken;
+
+            require(earningsInEth > Math.sqrt(principalInEth * feesInEth), "Doesn't pass the compound requirements");
     }
 
     struct UpkeepState {
@@ -155,6 +186,7 @@ contract Compounder is IERC721Receiver, Ownable {
         int256 token1rate;
         uint256 earningsInEth;
         uint256 principalInEth;
+        uint256 feesInEth;
     }
 
     function doSingleUpkeep(uint256 tokenID) public {
@@ -183,41 +215,30 @@ contract Compounder is IERC721Receiver, Ownable {
         state.principalInEth = calculatePrincipal(position, state.token0rate, state.token1rate);
 
 
-        uint256 feesInEth;
-        uint256 excessAfterFeesInEth;
+
         if (state.amount0collected == state.amount0added) {
-            uint8 decimals = position.decimals1;
-            TokenCalculation memory excessArg = TokenCalculation(state.amount1collected-state.amount1added, state.token1rate, decimals);
-            uint256 excessETH = assetToETH(excessArg);
-            
-            feesInEth = manageExcess(excessETH);
-            excessAfterFeesInEth = excessETH - feesInEth; //remaining goes to an allowance of remainding that can be used for the next
-            
-            TokenCalculation memory feesInTokenArg = TokenCalculation(feesInEth, state.token1rate, decimals);
-            uint256 feesInToken = ETHtoAsset(feesInTokenArg);
-            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(excessAfterFeesInEth, state.token1rate, decimals));
-            
-            tokenIDtoTokenToExcess[tokenID][position.token1] += excessAfterFeesInToken;
-            upkeeperToTokenToTokenOwned[msg.sender][position.token1] += feesInToken;
-
-            console.log(feesInToken, excessAfterFeesInToken);
-
+            handleExcess(
+                tokenID,
+                position.token1,
+                position.decimals1,
+                state.amount1collected,
+                state.amount1added,
+                state.token1rate,
+                state.earningsInEth,
+                state.principalInEth
+            );
         } else {
-            uint8 decimals = position.decimals0;
-            TokenCalculation memory tc = TokenCalculation(state.amount0collected-state.amount0added, state.token0rate, decimals);
-            uint256 excessETH = assetToETH(tc);
-
-            feesInEth = manageExcess(excessETH);
-            
-            uint256 feesInToken = ETHtoAsset(TokenCalculation(feesInEth, state.token0rate, decimals));
-            uint256 excessAfterFeesInToken = ETHtoAsset(TokenCalculation(feesInToken, state.token0rate, decimals));
-            
-            tokenIDtoTokenToExcess[tokenID][position.token0] += excessAfterFeesInToken;
-            upkeeperToTokenToTokenOwned[msg.sender][position.token0] += feesInToken;
-
-            console.log(feesInToken, excessAfterFeesInToken);
+            handleExcess(
+                tokenID,
+                position.token1,
+                position.decimals0,
+                state.amount0collected,
+                state.amount0added,
+                state.token0rate,
+                state.earningsInEth,
+                state.principalInEth
+            );
         }
-        require(state.earningsInEth > Math.sqrt(state.principalInEth * feesInEth), "Doesn't pass the compound requirements");
         
     }
 
