@@ -11,13 +11,16 @@ module.exports = {
           evmVersion: "istanbul",
           optimizer: {
             enabled: true,
-            runs: 200,
+            runs: 100000000,
           },
         },
       },
     ],
   },
   networks: {
+    local: {
+			url: 'http://127.0.0.1:8545'
+	  },
     hardhat: {
       forking: {
         url: "https://eth-mainnet.g.alchemy.com/v2/wg9DkB-JY9NwnIUmYAC7V0lR_I7DIjLk",
@@ -25,7 +28,7 @@ module.exports = {
       },
     },
   },
-  // mocha: {
-  //   timeout: 100000000,
-  // },
+  mocha: {
+     timeout: 100000000,
+  }
 }

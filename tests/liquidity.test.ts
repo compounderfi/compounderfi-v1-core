@@ -1,9 +1,10 @@
 import chai, { expect } from "chai";
 import { Console } from "console";
 import { Contract, Signer } from "ethers";
-import { ethers, network } from "hardhat";
+import { ethers} from "hardhat";
 import { BigNumber} from "@ethersproject/bignumber";
-import { Address } from "cluster";
+import * as tdly from "@tenderly/hardhat-tenderly";
+import { hrtime } from "process";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
@@ -12,55 +13,6 @@ const WHALE = "0x47ac0fb4f2d84898e4d9e7b4dab3c24507a6d503"
 const NFPM = "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
 const swapRouter = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
 const deadline = 2659131770;
-async function mint(account: Signer) {
-  const contract: Contract = await ethers.getContractAt("INonfungiblePositionManager", NFPM);
-  const txn = await contract
-      .connect(account)
-      .mint(
-      [USDC,
-       USDT,
-       100, //0.01% fee tier
-       -5, //min tick
-       2, //max tick
-       5000000n * 10n ** 6n, //add 5 million in liqudity
-       5000000n * 10n ** 6n,
-       0,
-       0,
-       await account.getAddress(),
-       deadline
-      ]
-      )
-    
-    const receipt = await txn.wait();
-    for (const rec of receipt.events) {
-      if (rec.event == "IncreaseLiquidity") {
-        const tokenID: BigNumber = rec.args[0];
-        const amount0added: BigNumber = rec.args[2];
-        const amount1added: BigNumber = rec.args[3];
-        return [tokenID.toNumber(), amount0added.toNumber(), amount1added.toNumber()];
-      }
-    }
-
-    return [0, 0, 0];
-}
-
-async function swap(account: Signer, tokenA: String, tokenB: String) {
-  const contract: Contract = await ethers.getContractAt("ISwapRouter", swapRouter);
-  const txn = await contract
-  .connect(account)
-  .exactInputSingle(
-    [
-      tokenA,
-      tokenB,
-      100,
-      await account.getAddress(),
-      deadline,
-      75000000n * 10n ** 6n, //swap 75 million
-      0,
-      0
-    ]
-  )
-}
 
 describe("Compounder", () => {
   let compounder: Contract
@@ -124,17 +76,86 @@ describe("Compounder", () => {
     expect(resp[1]).to.be.equal(USDT);
     
   })
-
+  
+  it("compoundRandomPositions", async () => {
+    await compoundOther(uniswap, compounder, 273643);
+  }) 
+  /*
   it("generateFeesAndCompound", async () => {
     const [tokenIDminted, ,] = await mint(accounts[0]);
 
     await uniswap.connect(accounts[0])["safeTransferFrom(address,address,uint256)"](mainSignerAddress, compounder.address, tokenIDminted);
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 35; i++) {
       await swap(accounts[0], USDC, USDT);
       await swap(accounts[0], USDT, USDC);
     }
 
     const x = await compounder.connect(accounts[0]).doSingleUpkeep(tokenIDminted);
+    for (let i = 0; i < 35; i++) {
+      await swap(accounts[0], USDC, USDT);
+      await swap(accounts[0], USDT, USDC);
+    }
+
+    await compounder.connect(accounts[0]).doSingleUpkeep(tokenIDminted);
 
   })
+  */
 })
+
+async function compoundOther(uniswap: Contract, compounder: Contract, tokenID: Number) {
+  const ownerAddress = await uniswap.ownerOf(tokenID);
+  const ownerSigner = await ethers.getImpersonatedSigner(ownerAddress);
+  
+  await uniswap.connect(ownerSigner)["safeTransferFrom(address,address,uint256)"](ownerAddress, compounder.address, tokenID);
+  await compounder.connect(ownerSigner).doSingleUpkeep(tokenID);
+}
+
+async function mint(account: Signer) {
+  const contract: Contract = await ethers.getContractAt("INonfungiblePositionManager", NFPM);
+  const txn = await contract
+      .connect(account)
+      .mint(
+      [USDC,
+       USDT,
+       100, //0.01% fee tier
+       -5, //min tick
+       2, //max tick
+       100000n * 10n ** 6n, //add 5 million in liqudity
+       100000n * 10n ** 6n,
+       0,
+       0,
+       await account.getAddress(),
+       deadline
+      ]
+      )
+    
+    const receipt = await txn.wait();
+    for (const rec of receipt.events) {
+      if (rec.event == "IncreaseLiquidity") {
+        const tokenID: BigNumber = rec.args[0];
+        const amount0added: BigNumber = rec.args[2];
+        const amount1added: BigNumber = rec.args[3];
+        return [tokenID.toNumber(), amount0added.toNumber(), amount1added.toNumber()];
+      }
+    }
+
+    return [0, 0, 0];
+}
+
+async function swap(account: Signer, tokenA: String, tokenB: String) {
+  const contract: Contract = await ethers.getContractAt("ISwapRouter", swapRouter);
+  const txn = await contract
+  .connect(account)
+  .exactInputSingle(
+    [
+      tokenA,
+      tokenB,
+      100,
+      await account.getAddress(),
+      deadline,
+      50000000n * 10n ** 6n, //swap 75 million
+      0,
+      0
+    ]
+  )
+}

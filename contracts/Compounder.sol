@@ -17,7 +17,7 @@ import "@uniswap/v3-periphery/contracts/libraries/LiquidityAmounts.sol";
 
 import "@chainlink/contracts/src/v0.8/interfaces/FeedRegistryInterface.sol";
 
-import "hardhat/console.sol";
+//import "hardhat/console.sol";
 
 interface IERC20Extented is IERC20 {
     function decimals() external view returns (uint8);
@@ -41,7 +41,6 @@ contract Compounder is IERC721Receiver, Ownable {
         uint160 sqrtPrice0X96;
         uint160 sqrtPrice1X96;
         IUniswapV3Pool pool;
-        uint256 tokenID;
     }
 
     struct TokenCalculation {
@@ -101,9 +100,9 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
     
-    function calculatePrincipal(Position memory position, int256 amount0Price, int256 amount1Price) private view returns(uint256) {
+    function calculatePrincipal(Position memory position, uint256 tokenID, int256 amount0Price, int256 amount1Price) private view returns(uint256) {
         (uint160 sqrtPriceX96, , , , , ,) = position.pool.slot0();
-        (, , , , , , , uint128 liquidity , , , , ) = NFPM.positions(position.tokenID);
+        (, , , , , , , uint128 liquidity , , , , ) = NFPM.positions(tokenID);
         (uint256 amount0, uint256 amount1) = LiquidityAmounts.getAmountsForLiquidity(
             sqrtPriceX96,
             position.sqrtPrice0X96,
@@ -147,8 +146,6 @@ contract Compounder is IERC721Receiver, Ownable {
     }
 
     function handleExcess(uint256 tokenID, address token, uint8 decimals, uint256 amountCollected, uint256 amountAdded, int256 rate, uint256 earningsInEth, uint256 principalInEth) private {
-
-
             //excessETH represents the price of the excess amount of tokens in ETH
             uint256 excessETH = assetToETH(
                 TokenCalculation(
@@ -173,10 +170,10 @@ contract Compounder is IERC721Receiver, Ownable {
             
             tokenIDtoTokenToExcess[tokenID][token] += excessAfterFeesInToken;
             upkeeperToTokenToTokenOwned[msg.sender][token] += feesInToken;
-
+    /*
             console.log(earningsInEth);
             console.log(principalInEth);
-            console.log(feesInEth);
+            console.log(feesInEth);*/
             require(earningsInEth > Math.sqrt(principalInEth * feesInEth), "Doesn't pass the compound requirements");
     }
 
@@ -215,7 +212,7 @@ contract Compounder is IERC721Receiver, Ownable {
             TokenCalculation(state.amount1added, state.token1rate, position.decimals1)
         );
 
-        state.principalInEth = calculatePrincipal(position, state.token0rate, state.token1rate);
+        state.principalInEth = calculatePrincipal(position, tokenID, state.token0rate, state.token1rate);
 
 
 
@@ -251,9 +248,13 @@ contract Compounder is IERC721Receiver, Ownable {
         (, , address token0, address token1, uint24 fee, int24 tickLower , int24 tickUpper ,  , , , , ) = NFPM.positions(tokenID);
 
         //ensures that there is a chainlink ETH oracle pair associated with the tokens
-        require(CLFR.latestAnswer(token0, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
-        require(CLFR.latestAnswer(token1, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
+        if (token0 != WETH) {
+            require(CLFR.latestAnswer(token0, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
+        }
 
+        if (token1 != WETH) {
+            require(CLFR.latestAnswer(token1, 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) != 0);
+        }
 
         tokenIDtoPosition[tokenID] = Position(
             token0,
@@ -262,8 +263,7 @@ contract Compounder is IERC721Receiver, Ownable {
             IERC20Extented(token1).decimals(),
             TickMath.getSqrtRatioAtTick(tickLower),
             TickMath.getSqrtRatioAtTick(tickUpper),
-            IUniswapV3Pool(uniswapFactory.getPool(token0, token1, fee)),
-            tokenID
+            IUniswapV3Pool(uniswapFactory.getPool(token0, token1, fee))
         );
 
         tokenIDtoTokenToExcess[tokenID][token0] = 0;
